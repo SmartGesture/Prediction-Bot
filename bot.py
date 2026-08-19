@@ -19,7 +19,7 @@ threading.Thread(target=run_flask, daemon=True).start()
 # CONFIG
 TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID"))
-SHEET_URL = os.getenv("SHEET_URL") # Add this in Render
+SHEET_URL = os.getenv("SHEET_URL")
 
 # GOOGLE SHEETS CONNECT
 scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
@@ -48,36 +48,38 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"After payment, send screenshot here. Admin will activate you.",
         parse_mode='Markdown'
     )
+
 async def approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id!= ADMIN_ID: return
-    user_id = int(context.args[0]); plan = context.args[1]
-    days = DAYS[plan]; expires = datetime.now() + timedelta(days=days)
+    try:
+        user_id = int(context.args[0]); plan = context.args[1]
+        days = DAYS[plan]; expires = datetime.now() + timedelta(days=days)
 
-    # Check if user exists
-    users = sheet.get_all_records()
-    for i, u in enumerate(users):
-        if str(u['user_id']) == str(user_id):
-            sheet.update_cell(i+2, 3, plan)
-            sheet.update_cell(i+2, 4, expires.strftime("%Y-%m-%d %H:%M:%S"))
-            await update.message.reply_text("User updated!")
-            await context.bot.send_message(user_id, f"✅ RENEWED! {plan.upper()} till {expires.date()}")
-            return
+        users = sheet.get_all_records()
+        for i, u in enumerate(users):
+            if str(u['user_id']) == str(user_id):
+                sheet.update_cell(i+2, 3, plan)
+                sheet.update_cell(i+2, 4, expires.strftime("%Y-%m-%d %H:%M:%S"))
+                await update.message.reply_text("User updated!")
+                await context.bot.send_message(user_id, f"✅ RENEWED! {plan.upper()} till {expires.date()}")
+                return
 
-    # New user
-    sheet.append_row([user_id, "VIP", plan, expires.strftime("%Y-%m-%d %H:%M:%S")])
-    await update.message.reply_text("User added!")
-    await context.bot.send_message(user_id, f"✅ ACTIVATED! {plan.upper()} till {expires.date()}")
+        sheet.append_row([user_id, "VIP", plan, expires.strftime("%Y-%m-%d %H:%M:%S")])
+        await update.message.reply_text("User added!")
+        await context.bot.send_message(user_id, f"✅ ACTIVATED! {plan.upper()} till {expires.date()}")
+    except:
+        await update.message.reply_text("Usage: /approve user_id plan")
 
 async def sendcode(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id!= ADMIN_ID: return
     code = " ".join(context.args); now = datetime.now()
     users = sheet.get_all_records(); count = 0
     for u in users:
-        if datetime.strptime(u['expires_at'], "%Y-%m-%d %H:%M:%S") > now:
-            try:
+        try:
+            if datetime.strptime(u['expires_at'], "%Y-%m-%d %H:%M:%S") > now:
                 await context.bot.send_message(u['user_id'], f"🔥 TODAY'S CODE 🔥\n\n`{code}`", parse_mode='Markdown')
                 count += 1
-            except: pass
+        except: pass
     await update.message.reply_text(f"✅ Sent to {count} active users")
 
 def main():
@@ -86,6 +88,7 @@ def main():
     app_bot.add_handler(CallbackQueryHandler(button))
     app_bot.add_handler(CommandHandler("approve", approve))
     app_bot.add_handler(CommandHandler("sendcode", sendcode))
+    print("Bot is running...")
     app_bot.run_polling()
 
 if __name__ == '__main__': main()
