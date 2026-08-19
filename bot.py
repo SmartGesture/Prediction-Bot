@@ -1,71 +1,91 @@
+from flask import Flask
+import threading
+import os
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes
-import sqlite3
 from datetime import datetime, timedelta
-import os
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
 
+# FLASK TRICK FOR RENDER
+app = Flask(__name__)
+@app.route('/')
+def home(): return "Bot running ✅"
+def run_flask():
+    port = int(os.environ.get('PORT', 10000))
+    app.run(host='0.0.0.0', port=port)
+threading.Thread(target=run_flask, daemon=True).start()
+
+# CONFIG
 TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID"))
+SHEET_URL = os.getenv("SHEET_URL") # Add this in Render
 
-conn = sqlite3.connect('predict_bot.db', check_same_thread=False)
-c = conn.cursor()
-c.execute('''CREATE TABLE IF NOT EXISTS users
-            (user_id INTEGER, name TEXT, plan TEXT, expires_at TEXT, PRIMARY KEY(user_id))''')
-conn.commit()
+# GOOGLE SHEETS CONNECT
+scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+creds = ServiceAccountCredentials.from_json_keyfile_name("creds.json", scope)
+client = gspread.authorize(creds)
+sheet = client.open_by_url(SHEET_URL).sheet1
 
-PRICES = {'daily': 1, 'weekly': 7, 'monthly': 30}
+PRICES = {'daily': '15,000', 'weekly': '35,000', 'monthly': '70,000'}
+DAYS = {'daily': 1, 'weekly': 7, 'monthly': 30}
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
-        [InlineKeyboardButton("Daily - ₦35,000", callback_data='daily')],
-        [InlineKeyboardButton("Weekly - ₦50,000", callback_data='weekly')],
-        [InlineKeyboardButton("Monthly - ₦100,000", callback_data='monthly')]
+        [InlineKeyboardButton(f"Daily - ₦{PRICES['daily']}", callback_data='daily')],
+        [InlineKeyboardButton(f"Weekly - ₦{PRICES['weekly']}", callback_data='weekly')],
+        [InlineKeyboardButton(f"Monthly - ₦{PRICES['monthly']}", callback_data='monthly')]
     ]
-    await update.message.reply_text(
-        "👋 Welcome to VIP Predictions Bot!\n\nGet daily prediction codes here.\nChoose a plan:",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
+    await update.message.reply_text("👋 Welcome to VIP Predictions!\nChoose a plan:", reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     plan = query.data
-    price = {'daily': '15,000', 'weekly': '35,000', 'monthly': '70,000'}[plan]
+    price = PRICES[plan]
     await query.edit_message_text(
         f"You chose *{plan.upper()}* - ₦{price}\n\n"
-        f"Pay to: \nAccount: 0123456789\nBank: YOUR BANK\nName: YOUR NAME\n"
+        f"Pay to: \nAccount: 8143992377\nBank: Opay\nName: Igbeotumeh Emmanuel Olaonipekun\n"
         f"After payment, send screenshot here. Admin will activate you.",
         parse_mode='Markdown'
     )
-
 async def approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id!= ADMIN_ID: return
-    user_id = int(context.args[0])
-    plan = context.args[1]
-    days = PRICES[plan]
-    expires = datetime.now() + timedelta(days=days)
-    c.execute("REPLACE INTO users VALUES (?,?,?,?)",
-              (user_id, "User", plan, expires.strftime("%Y-%m-%d %H:%M:%S")))
-    conn.commit()
-    await context.bot.send_message(user_id, f"✅ You are ACTIVE on {plan.upper()} till {expires.date()}")
-    await update.message.reply_text("User activated!")
+    user_id = int(context.args[0]); plan = context.args[1]
+    days = DAYS[plan]; expires = datetime.now() + timedelta(days=days)
+
+    # Check if user exists
+    users = sheet.get_all_records()
+    for i, u in enumerate(users):
+        if str(u['user_id']) == str(user_id):
+            sheet.update_cell(i+2, 3, plan)
+            sheet.update_cell(i+2, 4, expires.strftime("%Y-%m-%d %H:%M:%S"))
+            await update.message.reply_text("User updated!")
+            await context.bot.send_message(user_id, f"✅ RENEWED! {plan.upper()} till {expires.date()}")
+            return
+
+    # New user
+    sheet.append_row([user_id, "VIP", plan, expires.strftime("%Y-%m-%d %H:%M:%S")])
+    await update.message.reply_text("User added!")
+    await context.bot.send_message(user_id, f"✅ ACTIVATED! {plan.upper()} till {expires.date()}")
 
 async def sendcode(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id!= ADMIN_ID: return
-    code = " ".join(context.args)
-    now = datetime.now()
-    c.execute("SELECT user_id FROM users WHERE expires_at >?", (now,))
-    users = c.fetchall()
-    count = 0
-    for user_id, in users:
-        try:
-            await context.bot.send_message(user_id, f"🔥 TODAY'S CODE 🔥\n\n`{code}`", parse_mode='Markdown')
-            count += 1
-        except: pass
+    code = " ".join(context.args); now = datetime.now()
+    users = sheet.get_all_records(); count = 0
+    for u in users:
+        if datetime.strptime(u['expires_at'], "%Y-%m-%d %H:%M:%S") > now:
+            try:
+                await context.bot.send_message(u['user_id'], f"🔥 TODAY'S CODE 🔥\n\n`{code}`", parse_mode='Markdown')
+                count += 1
+            except: pass
     await update.message.reply_text(f"✅ Sent to {count} active users")
 
-app = ApplicationBuilder().token(TOKEN).build()
-app.add_handler(CommandHandler("start", start))
-app.add_handler(CallbackQueryHandler(button))
-app.add_handler(CommandHandler("approve", approve))
-app.add_handler(CommandHandler("sendcode", sendcode))
-app.run_polling()
+def main():
+    app_bot = ApplicationBuilder().token(TOKEN).build()
+    app_bot.add_handler(CommandHandler("start", start))
+    app_bot.add_handler(CallbackQueryHandler(button))
+    app_bot.add_handler(CommandHandler("approve", approve))
+    app_bot.add_handler(CommandHandler("sendcode", sendcode))
+    app_bot.run_polling()
+
+if __name__ == '__main__': main()
